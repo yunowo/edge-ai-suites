@@ -13,6 +13,8 @@ import yaml
 RESNET18 = "https://download.pytorch.org/models/resnet18-f37072fd.pth"
 RESNET50 = "https://download.pytorch.org/models/resnet50-11ad3fa6.pth"
 MOBILENETV2 = "https://download.pytorch.org/models/mobilenet_v2-7ebf99e0.pth"
+REID_XML = "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/person-reidentification-retail-0288/FP16/person-reidentification-retail-0288.xml"
+REID_BIN = "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/person-reidentification-retail-0288/FP16/person-reidentification-retail-0288.bin"
 
 METADATA_URL = "https://raw.githubusercontent.com/openvinotoolkit/open_model_zoo/master/models/public/resnet-18-pytorch/model.yml"
 DATASET_URL = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz"
@@ -127,7 +129,18 @@ def convert_classification_models(output_dir: str = "models/va"):
     model = models.mobilenet_v2()
     model.load_state_dict(torch.load(weights_path, map_location='cpu', weights_only=False))
     convert_to_openvino(model, "mobilenetv2", output_path, input_shape=(1, 3, 224, 224))
-    
+
+    print("\nProcessing person-reidentification-retail-0288")
+    download(REID_XML, "person-reidentification-retail-0288.xml", output_path)
+    download(REID_BIN, "person-reidentification-retail-0288.bin", output_path)
+    core = ov.Core()
+    reid_model = core.read_model(str(output_path / "person-reidentification-retail-0288.xml"))
+    reid_model.set_rt_info("raw_data_copy", ['model_info', 'model_type'])
+    reid_model.set_rt_info("123.675,116.28,103.53", ['model_info', 'mean_values'])
+    reid_model.set_rt_info("58.395,57.12,57.375", ['model_info', 'scale_values'])
+    reid_model.set_rt_info("RGB", ['model_info', 'color_space'])
+    ov.save_model(reid_model, str(output_path / "person-reidentification-retail-0288.xml"))
+
     print("Conversion completed!")
 
 

@@ -2,7 +2,8 @@ import logging, os
 from typing import Tuple
 from utils.config_loader import config
 from utils.cli_utils import run_cli
-from utils import convert_classification_models, convert_yolo_models
+from utils.convert_classification_models import convert_classification_models
+from utils.convert_yolo_models import convert_yolo_models
 logger = logging.getLogger(__name__)
 
 def _ir_exists(output_dir: str) -> bool:
