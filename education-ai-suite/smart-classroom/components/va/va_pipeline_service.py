@@ -176,7 +176,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/front_resnet18.txt",
+            f"file-path={output_dir.as_posix()}/front_resnet18.txt",
             "file-format=json-lines",
             "!",
             "fakesink",
@@ -211,7 +211,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/front_posture.txt",
+            f"file-path={output_dir.as_posix()}/front_posture.txt",
             "!",
             "gvawatermark",
             "!",
@@ -239,7 +239,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/front_mobilenetv2.txt",
+            f"file-path={output_dir.as_posix()}/front_mobilenetv2.txt",
             "file-format=json-lines",
             "!",
             "fakesink",
@@ -272,7 +272,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/back_posture.txt",
+            f"file-path={output_dir.as_posix()}/back_posture.txt",
             "file-format=json-lines",
             "!",
             "queue",
@@ -291,7 +291,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/back_resnet18.txt",
+            f"file-path={output_dir.as_posix()}/back_resnet18.txt",
             "file-format=json-lines",
             "!",
             "gvafpscounter",
@@ -331,7 +331,7 @@ class VideoAnalyticsPipelineService:
             "gvametaconvert",
             "!",
             "gvametapublish",
-            f"file-path={output_dir}/content_results.txt",
+            f"file-path={output_dir.as_posix()}/content_results.txt",
             "file-format=json-lines",
             "!",
             "fakesink",
@@ -417,7 +417,7 @@ class VideoAnalyticsPipelineService:
             self.logger.info(f"Command: {' '.join(command)}")
 
             # Create log file for pipeline output
-            log_dir = Path("logs")
+            log_dir = Path(options.output_dir) / "logs"
             log_dir.mkdir(exist_ok=True)
             log_file = log_dir / f"{pipeline_name}_{int(time.time())}.log"
             log_handle = open(log_file, "w", buffering=1)  # Line buffered
@@ -465,7 +465,7 @@ class VideoAnalyticsPipelineService:
             self.logger.info(f"  Log file: {log_file}")
 
             # Check for "Redistribute latency" in log file
-            time.sleep(10)
+            time.sleep(5)
             self.pipeline_log_handles[pipeline_name].flush()
             if self._check_redistribute_latency(log_file):
                 self.logger.info("Pipeline initialized successfully")
