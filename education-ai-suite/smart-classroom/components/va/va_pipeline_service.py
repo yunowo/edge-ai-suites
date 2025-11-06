@@ -12,12 +12,6 @@ from enum import Enum
 import atexit
 import json
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
 
 class PipelineName(Enum):
     """Enumeration of pipeline names"""
@@ -746,3 +740,271 @@ class VideoAnalyticsPipelineService:
                 except:
                     pass
             self.pipeline_log_handles.clear()
+
+    def get_pose_stats(self, front_posture_file: str = "outputs/front_posture.txt") -> Dict:
+        """
+        Analyze front_posture.txt and generate pose statistics based on pose transitions
+        
+        Args:
+            front_posture_file: Path to front_posture.txt file
+            
+        Returns:
+            Dictionary with statistics:
+            - student_count: Average person count
+            - stand_count: Count of stand transitions (sit->stand->sit counts as one)
+            - raise_up_count: Count of raise up transitions (not raising->raising->not raising counts as one)
+            - stand_reid: List of student IDs with their stand transition counts
+        """
+        posture_file = Path(front_posture_file)
+        
+        if not posture_file.exists():
+            self.logger.error(f"Front posture file not found: {posture_file}")
+            return {
+                "student_count": 0,
+                "stand_count": 0,
+                "raise_up_count": 0,
+                "stand_reid": []
+            }
+        
+        try:
+            # Read all lines
+            with open(posture_file, "r") as f:
+                lines = f.readlines()
+            
+            if not lines:
+                self.logger.warning("Front posture file is empty")
+                return {
+                    "student_count": 0,
+                    "stand_count": 0,
+                    "raise_up_count": 0,
+                    "stand_reid": []
+                }
+            
+            # Parse JSON objects
+            frames = []
+            for line in lines:
+                line = line.strip()
+                if line:
+                    try:
+                        obj = json.loads(line)
+                        frames.append(obj)
+                    except json.JSONDecodeError:
+                        continue
+            
+            if not frames:
+                self.logger.warning("No valid JSON frames found")
+                return {
+                    "student_count": 0,
+                    "stand_count": 0,
+                    "raise_up_count": 0,
+                    "stand_reid": []
+                }
+            
+            # Helper function to calculate IoU (Intersection over Union) between two bounding boxes
+            def calculate_iou(bbox1, bbox2):
+                """Calculate IoU between two bounding boxes"""
+                x1_min = bbox1.get("x_min", 0)
+                y1_min = bbox1.get("y_min", 0)
+                x1_max = bbox1.get("x_max", 0)
+                y1_max = bbox1.get("y_max", 0)
+                
+                x2_min = bbox2.get("x_min", 0)
+                y2_min = bbox2.get("y_min", 0)
+                x2_max = bbox2.get("x_max", 0)
+                y2_max = bbox2.get("y_max", 0)
+                
+                # Calculate intersection
+                x_left = max(x1_min, x2_min)
+                y_top = max(y1_min, y2_min)
+                x_right = min(x1_max, x2_max)
+                y_bottom = min(y1_max, y2_max)
+                
+                if x_right < x_left or y_bottom < y_top:
+                    return 0.0
+                
+                intersection = (x_right - x_left) * (y_bottom - y_top)
+                
+                # Calculate union
+                area1 = (x1_max - x1_min) * (y1_max - y1_min)
+                area2 = (x2_max - x2_min) * (y2_max - y2_min)
+                union = area1 + area2 - intersection
+                
+                if union == 0:
+                    return 0.0
+                
+                return intersection / union
+            
+            # Calculate statistics
+            
+            # 1. Student count at 60s, 120s, 180s (average)
+            # Assuming 15 FPS: 60s = 900 frames, 120s = 1800 frames, 180s = 2700 frames
+            target_frames = [900, 1800, 2700]
+            person_counts = []
+            
+            for target_idx in target_frames:
+                if target_idx < len(frames):
+                    frame = frames[target_idx]
+                    objects = frame.get("objects", [])
+                    # Count objects with non-zero bounding box (valid detections)
+                    count = sum(1 for obj in objects 
+                              if obj.get("detection", {}).get("bounding_box", {}).get("x_max", 0) > 0)
+                    person_counts.append(count)
+            
+            # Average student count
+            student_count = int(sum(person_counts) / len(person_counts)) if person_counts else 0
+            
+            # 2. Track pose transitions with robustness
+            # Minimum frames to confirm state change (at 15 FPS, 3 frames = 0.2 seconds)
+            MIN_FRAMES_FOR_TRANSITION = 3
+            IOU_THRESHOLD = 0.3  # IoU threshold for matching objects without ID
+            
+            # State tracking for students with IDs
+            student_states = {}  # {student_id: {"is_standing": bool, "is_raising": bool, "stand_buffer": int, "raise_buffer": int}}
+            student_stand_counts = {}
+            student_raise_counts = {}
+            
+            # State tracking for objects without IDs (using ROI matching)
+            unidentified_objects = []  # [{bbox, is_raising, raise_buffer, raise_count}]
+            total_raise_count_no_id = 0
+            
+            for frame_idx, frame in enumerate(frames):
+                objects = frame.get("objects", [])
+                
+                # Track which unidentified objects were matched this frame
+                matched_unidentified = set()
+                
+                for obj in objects:
+                    detection = obj.get("detection", {})
+                    label = detection.get("label", "")
+                    student_id = obj.get("id", 0)
+                    bbox = detection.get("bounding_box", {})
+                    
+                    # Skip invalid detections (zero bounding box)
+                    if bbox.get("x_max", 0) == 0:
+                        continue
+                    
+                    # Determine current pose state
+                    is_standing = label in ["stand", "stand_raise_up"]
+                    is_raising = label in ["sit_raise_up", "stand_raise_up"]
+                    
+                    # Handle students with IDs
+                    if student_id > 0:
+                        # Initialize student state if not exists
+                        if student_id not in student_states:
+                            student_states[student_id] = {
+                                "is_standing": False,
+                                "is_raising": False,
+                                "stand_buffer": 0,
+                                "raise_buffer": 0
+                            }
+                            student_stand_counts[student_id] = 0
+                            student_raise_counts[student_id] = 0
+                        
+                        state = student_states[student_id]
+                        
+                        # Standing state transition with buffer
+                        if is_standing != state["is_standing"]:
+                            state["stand_buffer"] += 1
+                            if state["stand_buffer"] >= MIN_FRAMES_FOR_TRANSITION:
+                                # Confirmed transition
+                                if is_standing:  # Transition to standing
+                                    student_stand_counts[student_id] += 1
+                                state["is_standing"] = is_standing
+                                state["stand_buffer"] = 0
+                        else:
+                            state["stand_buffer"] = 0
+                        
+                        # Raising state transition with buffer
+                        if is_raising != state["is_raising"]:
+                            state["raise_buffer"] += 1
+                            if state["raise_buffer"] >= MIN_FRAMES_FOR_TRANSITION:
+                                # Confirmed transition
+                                if is_raising:  # Transition to raising
+                                    student_raise_counts[student_id] += 1
+                                state["is_raising"] = is_raising
+                                state["raise_buffer"] = 0
+                        else:
+                            state["raise_buffer"] = 0
+                    
+                    # Handle students without IDs (only track raising)
+                    else:
+                        # Try to match with existing unidentified objects using IoU
+                        best_match_idx = -1
+                        best_iou = 0
+                        
+                        for idx, unid_obj in enumerate(unidentified_objects):
+                            if idx in matched_unidentified:
+                                continue
+                            iou = calculate_iou(bbox, unid_obj["bbox"])
+                            if iou > best_iou and iou >= IOU_THRESHOLD:
+                                best_iou = iou
+                                best_match_idx = idx
+                        
+                        if best_match_idx >= 0:
+                            # Matched existing object
+                            unid_obj = unidentified_objects[best_match_idx]
+                            matched_unidentified.add(best_match_idx)
+                            
+                            # Update bbox
+                            unid_obj["bbox"] = bbox
+                            
+                            # Raising state transition with buffer
+                            if is_raising != unid_obj["is_raising"]:
+                                unid_obj["raise_buffer"] += 1
+                                if unid_obj["raise_buffer"] >= MIN_FRAMES_FOR_TRANSITION:
+                                    # Confirmed transition
+                                    if is_raising:  # Transition to raising
+                                        unid_obj["raise_count"] += 1
+                                        total_raise_count_no_id += 1
+                                    unid_obj["is_raising"] = is_raising
+                                    unid_obj["raise_buffer"] = 0
+                            else:
+                                unid_obj["raise_buffer"] = 0
+                            
+                            unid_obj["last_seen_frame"] = frame_idx
+                        
+                        else:
+                            # New unidentified object
+                            unidentified_objects.append({
+                                "bbox": bbox,
+                                "is_raising": is_raising,
+                                "raise_buffer": 0,
+                                "raise_count": 0,
+                                "last_seen_frame": frame_idx
+                            })
+                
+                # Remove stale unidentified objects (not seen for 30 frames = 2 seconds at 15 FPS)
+                unidentified_objects = [
+                    obj for obj in unidentified_objects
+                    if frame_idx - obj["last_seen_frame"] < 30
+                ]
+            
+            # 3. Calculate total counts
+            stand_count = sum(student_stand_counts.values())
+            raise_up_count = sum(student_raise_counts.values()) + total_raise_count_no_id
+            
+            # 4. Format student ID list (only students with stand transitions)
+            stand_reid = [
+                {"student_id": sid, "count": count}
+                for sid, count in sorted(student_stand_counts.items())
+                if count > 0
+            ]
+            
+            stats = {
+                "student_count": student_count,
+                "stand_count": stand_count,
+                "raise_up_count": raise_up_count,
+                "stand_reid": stand_reid
+            }
+            
+            self.logger.info(f"Pose statistics: {stats}")
+            return stats
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing pose statistics: {e}")
+            return {
+                "student_count": 0,
+                "stand_count": 0,
+                "raise_up_count": 0,
+                "stand_reid": []
+            }

@@ -139,6 +139,9 @@ def convert_yolo_to_openvino(model_name):
     print(f"Quantized model will be saved to {int8_model_pose_path}")
     ov.save_model(quantized_pose_model, str(int8_model_pose_path))
 
-if __name__ == "__main__":
+def convert_yolo_models():
     convert_yolo_to_openvino("yolov8s-pose")
     convert_yolo_to_openvino("yolov8m-pose")
+
+if __name__ == "__main__":
+    convert_yolo_models()

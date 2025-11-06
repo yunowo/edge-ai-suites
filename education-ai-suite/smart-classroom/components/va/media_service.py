@@ -9,11 +9,6 @@ import requests
 import zipfile
 import atexit
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
 class MediaService:
     """Service to manage MediaMTX RTSP server"""

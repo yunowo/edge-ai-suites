@@ -2,6 +2,7 @@ import logging, os
 from typing import Tuple
 from utils.config_loader import config
 from utils.cli_utils import run_cli
+from utils import convert_classification_models, convert_yolo_models
 logger = logging.getLogger(__name__)
 
 def _ir_exists(output_dir: str) -> bool:
@@ -54,6 +55,8 @@ def ensure_model():
     if config.models.asr.provider == "openvino":
         output_dir = get_asr_model_path()
         _download_openvino_model(f"openai/{config.models.asr.name}", output_dir, None)
+    convert_yolo_models()
+    convert_classification_models()
 
 def get_model_path() -> str:
     return os.path.join(config.models.summarizer.models_base_path, config.models.summarizer.provider, f"{config.models.summarizer.name.replace('/', '_')}_{config.models.summarizer.weight_format}")
