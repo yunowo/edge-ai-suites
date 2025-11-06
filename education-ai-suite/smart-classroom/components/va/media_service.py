@@ -8,6 +8,7 @@ import signal
 import requests
 import zipfile
 import atexit
+from utils.config_loader import config
 
 
 class MediaService:
@@ -23,7 +24,7 @@ class MediaService:
         """
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        self.mediamtx_dir = Path("mediamtx").resolve()
+        self.mediamtx_dir = Path(config.va_pipeline.mediamtx_path).resolve()
         self.mediamtx_exe = self.mediamtx_dir / "mediamtx.exe"
         self.process: Optional[subprocess.Popen] = None
 

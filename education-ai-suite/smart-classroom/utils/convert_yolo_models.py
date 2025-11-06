@@ -78,11 +78,11 @@ if not (OUT_DIR / "coco8-pose/labels").exists():
         zip_ref.extractall(OUT_DIR)
 
 
-def convert_yolo_to_openvino(model_name):
+def convert_yolo_to_openvino(model_name: str, output_dir: str):
     pose_model = YOLO(f"{model_name}.pt")
     label_map = pose_model.model.names
 
-    pose_model_path = Path(f"{model_name}_openvino_model/{model_name}.xml")
+    pose_model_path = Path(f"{output_dir}/{model_name}_openvino_model/{model_name}.xml")
     if not pose_model_path.exists():
         pose_model.export(format="openvino", dynamic=True, half=True)
 
@@ -133,15 +133,13 @@ def convert_yolo_to_openvino(model_name):
     quantized_pose_model.set_rt_info("yolo_v8_pose" if 'v8' in model_name else "yolo_v11_pose", ['model_info', 'model_type'])
     quantized_pose_model.set_rt_info("sit stand sit_raise_up stand_raise_up", ['model_info', 'labels'])
 
-    int8_model_pose_path = Path(
-        f"{model_name}_openvino_model_int8/{model_name}.xml"
-    )
+    int8_model_pose_path = Path(f"{output_dir}/{model_name}.xml")
     print(f"Quantized model will be saved to {int8_model_pose_path}")
     ov.save_model(quantized_pose_model, str(int8_model_pose_path))
 
-def convert_yolo_models():
-    convert_yolo_to_openvino("yolov8s-pose")
-    convert_yolo_to_openvino("yolov8m-pose")
+def convert_yolo_models(output_dir: str = "models/va"):
+    convert_yolo_to_openvino("yolov8s-pose", output_dir)
+    convert_yolo_to_openvino("yolov8m-pose", output_dir)
 
 if __name__ == "__main__":
     convert_yolo_models()

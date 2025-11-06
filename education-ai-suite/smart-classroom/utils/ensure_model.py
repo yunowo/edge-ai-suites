@@ -55,11 +55,16 @@ def ensure_model():
     if config.models.asr.provider == "openvino":
         output_dir = get_asr_model_path()
         _download_openvino_model(f"openai/{config.models.asr.name}", output_dir, None)
-    convert_yolo_models()
-    convert_classification_models()
+    
+    output_dir = get_va_model_path()
+    convert_yolo_models(output_dir)
+    convert_classification_models(output_dir)
 
 def get_model_path() -> str:
     return os.path.join(config.models.summarizer.models_base_path, config.models.summarizer.provider, f"{config.models.summarizer.name.replace('/', '_')}_{config.models.summarizer.weight_format}")
 
 def get_asr_model_path() -> str:
     return os.path.join(config.models.asr.models_base_path, config.models.asr.provider, f"{config.models.asr.name.replace('/', '_')}")
+
+def get_va_model_path() -> str:
+    return os.path.join(config.models.va.models_base_path, "va")

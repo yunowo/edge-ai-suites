@@ -15,21 +15,13 @@ RESNET50 = "https://download.pytorch.org/models/resnet50-11ad3fa6.pth"
 MOBILENETV2 = "https://download.pytorch.org/models/mobilenet_v2-7ebf99e0.pth"
 
 METADATA_URL = "https://raw.githubusercontent.com/openvinotoolkit/open_model_zoo/master/models/public/resnet-18-pytorch/model.yml"
-
-# Output directory
-OUTPUT_DIR = Path("model")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-DATASET_PATH = OUTPUT_DIR / "datasets"
-DATASET_PATH.mkdir(exist_ok=True)
-
 DATASET_URL = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz"
 DATASET_CLASSES = 10
 
 
-def download(url, filename):
+def download(url, filename, output_dir):
     """Download model weights if not already present."""
-    filepath = OUTPUT_DIR / filename
+    filepath = output_dir / filename
     if filepath.exists():
         return filepath
     
@@ -61,7 +53,7 @@ def download_dataset(url, dataset_path):
         os.remove(archive_path)
     return dataset_path
 
-def convert_to_openvino(model, model_name, input_shape=(1, 3, 224, 224)):
+def convert_to_openvino(model, model_name, output_dir, input_shape=(1, 3, 224, 224)):
     """Convert PyTorch model to OpenVINO format."""
     print(f"\nConverting {model_name} model...")
     
@@ -72,7 +64,9 @@ def convert_to_openvino(model, model_name, input_shape=(1, 3, 224, 224)):
     ov_model.reshape({ov_model.inputs[0].get_any_name(): input_shape})
     
     print(f"Quantizing {model_name} model...")
-    dataset_path = download_dataset(DATASET_URL, DATASET_PATH)
+    dataset_path = output_dir / "datasets"
+    dataset_path.mkdir(exist_ok=True)
+    dataset_path = download_dataset(DATASET_URL, dataset_path)
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     val_dataset = datasets.ImageFolder(
         root=dataset_path / "imagenette2-320/val",
@@ -106,30 +100,33 @@ def convert_to_openvino(model, model_name, input_shape=(1, 3, 224, 224)):
 
 
     # Save the quantized model
-    output_path = OUTPUT_DIR / f"{model_name}.xml"
+    output_path = output_dir / f"{model_name}.xml"
     ov.save_model(ov_quantized_model, output_path)
     print(f"Saved quantized OpenVINO model to {output_path}")
 
-def convert_classification_models():
+def convert_classification_models(output_dir: str = "models/va"):
     print("Starting model conversion process...\n")
     
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True, parents=True)
+    
     print("Processing ResNet-18")
-    weights_path = download(RESNET18, "resnet18-f37072fd.pth")
+    weights_path = download(RESNET18, "resnet18-f37072fd.pth", output_path)
     model = models.resnet18()
     model.load_state_dict(torch.load(weights_path, map_location='cpu', weights_only=False))
-    convert_to_openvino(model, "resnet18", input_shape=(1, 3, 224, 224))
+    convert_to_openvino(model, "resnet18", output_path, input_shape=(1, 3, 224, 224))
 
     print("\nProcessing ResNet-50")
-    weights_path = download(RESNET50, "resnet50-19c8e357.pth")
+    weights_path = download(RESNET50, "resnet50-19c8e357.pth", output_path)
     model = models.resnet50()
     model.load_state_dict(torch.load(weights_path, map_location='cpu', weights_only=False))
-    convert_to_openvino(model, "resnet50", input_shape=(1, 3, 224, 224))
+    convert_to_openvino(model, "resnet50", output_path, input_shape=(1, 3, 224, 224))
     
     print("\nProcessing MobileNetV2")
-    weights_path = download(MOBILENETV2, "mobilenet_v2-b0353104.pth")
+    weights_path = download(MOBILENETV2, "mobilenet_v2-b0353104.pth", output_path)
     model = models.mobilenet_v2()
     model.load_state_dict(torch.load(weights_path, map_location='cpu', weights_only=False))
-    convert_to_openvino(model, "mobilenetv2", input_shape=(1, 3, 224, 224))
+    convert_to_openvino(model, "mobilenetv2", output_path, input_shape=(1, 3, 224, 224))
     
     print("Conversion completed!")
 

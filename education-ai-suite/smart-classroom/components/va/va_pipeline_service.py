@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 import atexit
 import json
+from utils.config_loader import config
 
 
 class PipelineName(Enum):
@@ -34,37 +35,23 @@ class PipelineOptions:
 class VideoAnalyticsPipelineService:
     """Service to manage video analytics pipelines"""
 
-    def __init__(
-        self, plugin_path: Optional[str] = None, model_base_dir: Optional[str] = None
-    ):
+    def __init__(self):
         """
         Initialize VideoAnalyticsPipelineService
-
-        Args:
-            plugin_path: Path to custom plugins
-            model_base_dir: Base directory for models (default: current directory)
         """
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        # Set default plugin path
-        if plugin_path is None:
-            self.plugin_path = Path(".").resolve()
-        else:
-            self.plugin_path = Path(plugin_path).resolve()
+        # Set plugin path
+        self.plugin_path = Path(config.va_pipeline.plugin_path).resolve()
 
-        # Set model base directory
-        if model_base_dir is None:
-            self.model_base_dir = Path(".").resolve()
-        else:
-            self.model_base_dir = Path(model_base_dir).resolve()
-
-        # Model paths (relative to model_base_dir)
+        # Set model paths
+        self.model_base_dir = Path(config.models.va.models_base_path).resolve() / "va"
         self.models = {
-            "yolov8m": "model/yolov8m-pose.xml",
-            "yolov8s": "model/yolov8s-pose.xml",
-            "resnet18": "model/resnet18.xml",
-            "mobilenetv2": "model/mobilenetv2.xml",
-            "reid": "model/person-reidentification-retail-0288.xml",
+            "yolov8m": "yolov8m-pose.xml",
+            "yolov8s": "yolov8s-pose.xml",
+            "resnet18": "resnet18.xml",
+            "mobilenetv2": "mobilenetv2.xml",
+            "reid": "person-reidentification-retail-0288.xml",
         }
 
         # Active pipelines

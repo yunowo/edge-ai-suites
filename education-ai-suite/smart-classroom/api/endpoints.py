@@ -188,7 +188,7 @@ def start_video_analytics_pipeline(
 
     # Validate pipeline name
     valid_pipelines = ["front", "back", "content"]
-    if request.pipeline_name.lower() not in valid_pipelines:
+    if request.pipeline_name not in valid_pipelines:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid pipeline_name. Must be one of: {valid_pipelines}",
@@ -198,7 +198,7 @@ def start_video_analytics_pipeline(
     with video_analytics_lock:
         if x_session_id in va_services:
             existing_service = va_services[x_session_id]
-            if existing_service.is_pipeline_running(request.pipeline_name.lower()):
+            if existing_service.is_pipeline_running(request.pipeline_name):
                 raise HTTPException(
                     status_code=409,
                     detail=f"Pipeline '{request.pipeline_name}' already running for session {x_session_id}",
@@ -231,7 +231,7 @@ def start_video_analytics_pipeline(
 
             # Launch pipeline
             success = service.launch_pipeline(
-                pipeline_name=request.pipeline_name.lower(),
+                pipeline_name=request.pipeline_name,
                 source=request.source,
                 options=options,
             )
@@ -242,15 +242,12 @@ def start_video_analytics_pipeline(
                     detail=f"Failed to start pipeline '{request.pipeline_name}'",
                 )
 
-            # Prepare response based on pipeline type
-            pipeline_name_lower = request.pipeline_name.lower()
             hls_base_url = "http://localhost:8888"
-
             response_data = {
                 "status": "success",
-                "pipeline_name": pipeline_name_lower,
+                "pipeline_name": request.pipeline_name,
                 "session_id": x_session_id,
-                "hls_stream": f"{hls_base_url}/{pipeline_name_lower}_stream",
+                "hls_stream": f"{hls_base_url}/{request.pipeline_name}_stream",
             }
 
             return JSONResponse(content=response_data, status_code=200)
@@ -282,7 +279,7 @@ def stop_video_analytics_pipeline(
 
     # Validate pipeline name
     valid_pipelines = ["front", "back", "content"]
-    if request.pipeline_name.lower() not in valid_pipelines:
+    if request.pipeline_name not in valid_pipelines:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid pipeline_name. Must be one of: {valid_pipelines}",
@@ -297,17 +294,16 @@ def stop_video_analytics_pipeline(
     with video_analytics_lock:
         try:
             service = va_services[x_session_id]
-            pipeline_name_lower = request.pipeline_name.lower()
 
             # Check if pipeline is running
-            if not service.is_pipeline_running(pipeline_name_lower):
+            if not service.is_pipeline_running(request.pipeline_name):
                 raise HTTPException(
                     status_code=404,
                     detail=f"Pipeline '{request.pipeline_name}' is not running for session {x_session_id}",
                 )
 
             # Stop the pipeline
-            success = service.stop_pipeline(pipeline_name_lower)
+            success = service.stop_pipeline(request.pipeline_name)
 
             if not success:
                 raise HTTPException(
@@ -318,7 +314,7 @@ def stop_video_analytics_pipeline(
             return JSONResponse(
                 content={
                     "status": "success",
-                    "pipeline_name": pipeline_name_lower,
+                    "pipeline_name": request.pipeline_name,
                     "session_id": x_session_id,
                 },
                 status_code=200,
