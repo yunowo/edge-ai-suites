@@ -248,6 +248,7 @@ def start_video_analytics_pipeline(
                 "pipeline_name": request.pipeline_name,
                 "session_id": x_session_id,
                 "hls_stream": f"{hls_base_url}/{request.pipeline_name}_stream",
+                "overlays_embedded": True
             }
 
             return JSONResponse(content=response_data, status_code=200)
