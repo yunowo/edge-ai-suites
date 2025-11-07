@@ -79,7 +79,7 @@ class VideoAnalyticsPipelineService:
 
     def _get_source_elements(self, source: str, input_type: str) -> List[str]:
         """Get source elements based on input type"""
-        if input_type == "rtsp":
+        if input_type == "rtsp" and config.va_pipeline.rtsp_codec == "h264":
             return [
                 "rtspsrc",
                 f"location={source}",
@@ -93,16 +93,26 @@ class VideoAnalyticsPipelineService:
                 "d3d11h264dec",
                 "!",
             ]
+        elif input_type == "rtsp" and config.va_pipeline.rtsp_codec == "h265":
+            return [
+                "rtspsrc",
+                f"location={source}",
+                "protocols=tcp",
+                "!",
+                "rtph265depay",
+                "wait-for-keyframe=true",
+                "!",
+                "h265parse",
+                "!",
+                "d3d11h265dec",
+                "!",
+            ]
         elif input_type == "file":
             return [
                 "filesrc",
                 f"location={source}",
                 "!",
-                "qtdemux",
-                "!",
-                "h264parse",
-                "!",
-                "d3d11h264dec",
+                "decodebin3",
                 "!",
             ]
         else:
@@ -114,7 +124,7 @@ class VideoAnalyticsPipelineService:
         """Get RTSP sink elements for pushing to RTSP server"""
         return [
             "mfh264enc",
-            "bitrate=5000",
+            "bitrate=2000",
             "gop-size=15",
             "!",
             "h264parse",
@@ -133,6 +143,16 @@ class VideoAnalyticsPipelineService:
         except Exception as e:
             self.logger.warning(f"Failed to check log file: {e}")
             return False
+        
+    def _check_error(self, log_file: Path) -> bool:
+        """Check if 'ERROR' appears in log file"""
+        try:
+            with open(log_file, "r") as f:
+                content = f.read()
+                return "ERROR: from element" in content
+        except Exception as e:
+            self.logger.warning(f"Failed to check log file: {e}")
+            return False
 
     def _build_pipeline_front(self, source: str, options: PipelineOptions, input_type: str) -> List[str]:
         """Build front camera pipeline (Pipeline 1)"""
@@ -141,6 +161,10 @@ class VideoAnalyticsPipelineService:
 
         pipeline = [
             *self._get_source_elements(source, input_type),
+            "videorate",
+            "!",
+            "video/x-raw(memory:D3D11Memory),framerate=15/1",
+            "!",
             # YOLO detection
             "gvadetect",
             f"model={self._get_model_path('yolov8m')}",
@@ -212,6 +236,7 @@ class VideoAnalyticsPipelineService:
             "!",
             "gvametapublish",
             f"file-path={output_dir.as_posix()}/front_posture.txt",
+            "file-format=json-lines",
             "!",
             "gvawatermark",
             "!",
@@ -255,6 +280,10 @@ class VideoAnalyticsPipelineService:
 
         pipeline = [
             *self._get_source_elements(source, input_type),
+            "videorate",
+            "!",
+            "video/x-raw(memory:D3D11Memory),framerate=15/1",
+            "!",
             # YOLO detection
             "gvadetect",
             f"model={self._get_model_path('yolov8s')}",
@@ -311,12 +340,10 @@ class VideoAnalyticsPipelineService:
 
         pipeline = [
             *self._get_source_elements(source, input_type),
-            "tee",
-            "name=t",
-            # Branch 1: ResNet18 classification (metadata only)
-            "t.",
+            # Branch 1: ResNet18 classification
+            "videorate",
             "!",
-            "queue",
+            "video/x-raw(memory:D3D11Memory),framerate=1/1",
             "!",
             "gvaclassify",
             f"model={self._get_model_path('resnet18')}",
@@ -334,11 +361,7 @@ class VideoAnalyticsPipelineService:
             f"file-path={output_dir.as_posix()}/content_results.txt",
             "file-format=json-lines",
             "!",
-            "fakesink",
-            "async=false",
-            "sync=false",
-            # Branch 2: Direct RTSP output
-            "t.",
+            "gvawatermark",
             "!",
             *self._get_rtsp_sink_elements(
                 options.output_rtsp, "content_stream"
@@ -471,6 +494,9 @@ class VideoAnalyticsPipelineService:
                 self.logger.info("Pipeline initialized successfully")
             else:
                 self.logger.warning("Pipeline may not have initialized properly")
+            if self._check_error(log_file):
+                self.logger.error("Errors detected in pipeline log")
+                return False
             return True
 
         except Exception as e:
@@ -827,7 +853,10 @@ class VideoAnalyticsPipelineService:
             # Assuming 15 FPS: 60s = 900 frames, 120s = 1800 frames, 180s = 2700 frames
             target_frames = [900, 1800, 2700]
             person_counts = []
-            
+
+            if len(frames) < max(target_frames):
+                target_frames = [ len(frames) - 1 ]
+
             for target_idx in target_frames:
                 if target_idx < len(frames):
                     frame = frames[target_idx]
