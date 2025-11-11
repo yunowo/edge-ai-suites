@@ -122,7 +122,7 @@ class VideoAnalyticsPipelineService:
         elif input_type == "file":
             return [
                 "filesrc",
-                f"location={source}",
+                f"location={Path(source).as_posix()}",
                 "!",
                 "decodebin3",
                 "!",
