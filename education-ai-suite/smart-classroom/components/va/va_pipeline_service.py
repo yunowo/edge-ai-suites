@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 import atexit
 import json
+import threading
 from utils.config_loader import config
 
 
@@ -63,6 +64,17 @@ class VideoAnalyticsPipelineService:
 
         # Pipeline output files
         self.pipeline_output_files: Dict[str, List[Path]] = {}
+
+        # Pipeline monitoring threads
+        self.monitor_threads: Dict[str, threading.Thread] = {}
+        self.monitor_stop_flags: Dict[str, threading.Event] = {}
+
+        # Pipeline launch parameters for restart
+        self.pipeline_params: Dict[str, Dict] = {}
+
+        # Pipeline retry counts
+        self.pipeline_retry_counts: Dict[str, int] = {}
+        self.max_retries = 10
 
         # Register cleanup handler
         atexit.register(self._cleanup)
@@ -129,6 +141,8 @@ class VideoAnalyticsPipelineService:
             "!",
             "h264parse",
             "!",
+            "queue",
+            "!",
             "rtspclientsink",
             f"location={rtsp_url}/{pipeline_name}",
             "protocols=tcp"
@@ -143,7 +157,7 @@ class VideoAnalyticsPipelineService:
         except Exception as e:
             self.logger.warning(f"Failed to check log file: {e}")
             return False
-        
+
     def _check_error(self, log_file: Path) -> bool:
         """Check if 'ERROR' appears in log file"""
         try:
@@ -154,6 +168,150 @@ class VideoAnalyticsPipelineService:
             self.logger.warning(f"Failed to check log file: {e}")
             return False
 
+    def _check_normal_exit(self, log_file: Path) -> bool:
+        """Check if pipeline exited normally (has EOS message)"""
+        try:
+            with open(log_file, "r") as f:
+                content = f.read()
+                return 'Got EOS from element "pipeline0".' in content
+        except Exception as e:
+            self.logger.warning(f"Failed to check log file: {e}")
+            return False
+
+    def _monitor_pipeline(self, pipeline_name: str):
+        """
+        Monitor pipeline process and restart if it exits unexpectedly
+
+        Args:
+            pipeline_name: Name of the pipeline to monitor
+        """
+        stop_flag = self.monitor_stop_flags[pipeline_name]
+
+        while not stop_flag.is_set():
+            # Check if pipeline process is still running
+            if pipeline_name not in self.pipelines:
+                break
+
+            process = self.pipelines[pipeline_name]
+
+            # Check process status
+            if process.poll() is not None:
+                # Process has exited
+                log_file = self.pipeline_logs.get(pipeline_name)
+
+                if log_file and self._check_normal_exit(log_file):
+                    # Normal exit with EOS
+                    self.logger.info(
+                        f"Pipeline '{pipeline_name}' exited normally (EOS received)"
+                    )
+                    break
+                else:
+                    # Unexpected exit
+                    retry_count = self.pipeline_retry_counts.get(pipeline_name, 0)
+
+                    if retry_count < self.max_retries:
+                        self.logger.warning(
+                            f"Pipeline '{pipeline_name}' exited unexpectedly. "
+                            f"Restarting... (attempt {retry_count + 1}/{self.max_retries})"
+                        )
+
+                        # Increment retry count
+                        self.pipeline_retry_counts[pipeline_name] = retry_count + 1
+
+                        # Close old log handle
+                        if pipeline_name in self.pipeline_log_handles:
+                            try:
+                                self.pipeline_log_handles[pipeline_name].close()
+                            except:
+                                pass
+
+                        # Restart pipeline using saved parameters
+                        params = self.pipeline_params.get(pipeline_name)
+                        if params:
+                            time.sleep(2)  # Wait a bit before restarting
+                            self._launch_pipeline_internal(
+                                pipeline_name, params["options"], params["command"]
+                            )
+                        else:
+                            self.logger.error(
+                                f"Cannot restart pipeline '{pipeline_name}': parameters not found"
+                            )
+                            break
+                    else:
+                        self.logger.error(
+                            f"Pipeline '{pipeline_name}' reached maximum retry limit ({self.max_retries}). "
+                            f"Giving up."
+                        )
+                        break
+
+            # Check every 2 seconds
+            time.sleep(2)
+
+        self.logger.info(f"Monitor thread for pipeline '{pipeline_name}' stopped")
+
+    def _launch_pipeline_internal(
+        self, pipeline_name: str, options: PipelineOptions, command: List[str]
+    ) -> bool:
+        """
+        Internal method to launch pipeline (used for initial launch and restarts)
+
+        Args:
+            pipeline_name: Name of pipeline
+            options: Pipeline options
+            command: Full command to execute
+
+        Returns:
+            True if pipeline launched successfully, False otherwise
+        """
+        try:
+            # Create log file for pipeline output
+            log_dir = Path(options.output_dir) / "logs"
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / f"{pipeline_name}_{int(time.time())}.log"
+            log_handle = open(log_file, "w", buffering=1)  # Line buffered
+
+            # Launch pipeline
+            process = subprocess.Popen(
+                command,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1,
+                env=os.environ.copy(),
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    if sys.platform == "win32"
+                    else 0
+                ),
+            )
+
+            # Store pipeline process, log file, and log handle
+            self.pipelines[pipeline_name] = process
+            self.pipeline_logs[pipeline_name] = log_file
+            self.pipeline_log_handles[pipeline_name] = log_handle
+
+            self.logger.info(
+                f"Pipeline '{pipeline_name}' started with PID: {process.pid}"
+            )
+            self.logger.info(f"  Log file: {log_file}")
+
+            # Check for "Redistribute latency" in log file
+            time.sleep(5)
+            self.pipeline_log_handles[pipeline_name].flush()
+            if self._check_redistribute_latency(log_file):
+                self.logger.info("Pipeline initialized successfully")
+            else:
+                self.logger.warning("Pipeline may not have initialized properly")
+            if self._check_error(log_file):
+                self.logger.error("Errors detected in pipeline log")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to launch pipeline '{pipeline_name}': {e}")
+            return False
+
     def _build_pipeline_front(self, source: str, options: PipelineOptions, input_type: str) -> List[str]:
         """Build front camera pipeline (Pipeline 1)"""
         output_dir = Path(options.output_dir)
@@ -161,10 +319,6 @@ class VideoAnalyticsPipelineService:
 
         pipeline = [
             *self._get_source_elements(source, input_type),
-            "videorate",
-            "!",
-            "video/x-raw(memory:D3D11Memory),framerate=15/1",
-            "!",
             # YOLO detection
             "gvadetect",
             f"model={self._get_model_path('yolov8m')}",
@@ -280,10 +434,6 @@ class VideoAnalyticsPipelineService:
 
         pipeline = [
             *self._get_source_elements(source, input_type),
-            "videorate",
-            "!",
-            "video/x-raw(memory:D3D11Memory),framerate=15/1",
-            "!",
             # YOLO detection
             "gvadetect",
             f"model={self._get_model_path('yolov8s')}",
@@ -439,32 +589,6 @@ class VideoAnalyticsPipelineService:
             self.logger.info(f"  Metadata dir: {options.output_dir}")
             self.logger.info(f"Command: {' '.join(command)}")
 
-            # Create log file for pipeline output
-            log_dir = Path(options.output_dir) / "logs"
-            log_dir.mkdir(exist_ok=True)
-            log_file = log_dir / f"{pipeline_name}_{int(time.time())}.log"
-            log_handle = open(log_file, "w", buffering=1)  # Line buffered
-
-            # Launch pipeline
-            process = subprocess.Popen(
-                command,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-                env=os.environ.copy(),
-                creationflags=(
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    if sys.platform == "win32"
-                    else 0
-                ),
-            )
-
-            # Store pipeline process, log file, and log handle
-            self.pipelines[pipeline_name] = process
-            self.pipeline_logs[pipeline_name] = log_file
-            self.pipeline_log_handles[pipeline_name] = log_handle
-
             # Store output files for monitoring
             output_files = []
             if pipeline_name == PipelineName.FRONT.value:
@@ -482,21 +606,38 @@ class VideoAnalyticsPipelineService:
                 output_files = [Path(options.output_dir) / "content_results.txt"]
             self.pipeline_output_files[pipeline_name] = output_files
 
-            self.logger.info(
-                f"Pipeline '{pipeline_name}' started with PID: {process.pid}"
-            )
-            self.logger.info(f"  Log file: {log_file}")
+            # Save pipeline parameters for restart capability
+            self.pipeline_params[pipeline_name] = {
+                'options': options,
+                'command': command
+            }
 
-            # Check for "Redistribute latency" in log file
-            time.sleep(5)
-            self.pipeline_log_handles[pipeline_name].flush()
-            if self._check_redistribute_latency(log_file):
-                self.logger.info("Pipeline initialized successfully")
-            else:
-                self.logger.warning("Pipeline may not have initialized properly")
-            if self._check_error(log_file):
-                self.logger.error("Errors detected in pipeline log")
+            # Initialize retry count
+            self.pipeline_retry_counts[pipeline_name] = 0
+
+            # Launch pipeline
+            success = self._launch_pipeline_internal(
+                pipeline_name, options, command
+            )
+
+            if not success:
                 return False
+
+            # Start monitoring thread
+            stop_flag = threading.Event()
+            self.monitor_stop_flags[pipeline_name] = stop_flag
+
+            monitor_thread = threading.Thread(
+                target=self._monitor_pipeline,
+                args=(pipeline_name,),
+                daemon=True,
+                name=f"monitor-{pipeline_name}"
+            )
+            monitor_thread.start()
+            self.monitor_threads[pipeline_name] = monitor_thread
+
+            self.logger.info(f"Started monitoring thread for pipeline '{pipeline_name}'")
+
             return True
 
         except Exception as e:
@@ -552,6 +693,15 @@ class VideoAnalyticsPipelineService:
 
             del self.pipelines[pipeline_name]
 
+            # Stop monitoring thread
+            if pipeline_name in self.monitor_stop_flags:
+                self.monitor_stop_flags[pipeline_name].set()
+
+            if pipeline_name in self.monitor_threads:
+                monitor_thread = self.monitor_threads[pipeline_name]
+                monitor_thread.join(timeout=2.0)
+                del self.monitor_threads[pipeline_name]
+
             # Clean up associated data
             if pipeline_name in self.pipeline_logs:
                 del self.pipeline_logs[pipeline_name]
@@ -564,6 +714,12 @@ class VideoAnalyticsPipelineService:
                 del self.pipeline_log_handles[pipeline_name]
             if pipeline_name in self.pipeline_output_files:
                 del self.pipeline_output_files[pipeline_name]
+            if pipeline_name in self.pipeline_params:
+                del self.pipeline_params[pipeline_name]
+            if pipeline_name in self.pipeline_retry_counts:
+                del self.pipeline_retry_counts[pipeline_name]
+            if pipeline_name in self.monitor_stop_flags:
+                del self.monitor_stop_flags[pipeline_name]
 
             return True
 
@@ -744,6 +900,15 @@ class VideoAnalyticsPipelineService:
         """Cleanup handler called on process exit"""
         if self.pipelines:
             self.logger.info("Cleaning up pipelines on exit...")
+
+            # Stop all monitoring threads first
+            for stop_flag in self.monitor_stop_flags.values():
+                stop_flag.set()
+
+            # Wait for monitoring threads to finish
+            for thread in self.monitor_threads.values():
+                thread.join(timeout=2.0)
+
             self.stop_all_pipelines(timeout=5.0)
 
             # Close any remaining log file handles
@@ -769,7 +934,7 @@ class VideoAnalyticsPipelineService:
             - stand_reid: List of student IDs with their stand transition counts
         """
         posture_file = Path(front_posture_file)
-        
+
         if not posture_file.exists():
             self.logger.error(f"Front posture file not found: {posture_file}")
             return {
@@ -778,12 +943,12 @@ class VideoAnalyticsPipelineService:
                 "raise_up_count": 0,
                 "stand_reid": []
             }
-        
+
         try:
             # Read all lines
             with open(posture_file, "r") as f:
                 lines = f.readlines()
-            
+
             if not lines:
                 self.logger.warning("Front posture file is empty")
                 return {
@@ -792,7 +957,7 @@ class VideoAnalyticsPipelineService:
                     "raise_up_count": 0,
                     "stand_reid": []
                 }
-            
+
             # Parse JSON objects
             frames = []
             for line in lines:
@@ -803,7 +968,7 @@ class VideoAnalyticsPipelineService:
                         frames.append(obj)
                     except json.JSONDecodeError:
                         continue
-            
+
             if not frames:
                 self.logger.warning("No valid JSON frames found")
                 return {
@@ -812,7 +977,7 @@ class VideoAnalyticsPipelineService:
                     "raise_up_count": 0,
                     "stand_reid": []
                 }
-            
+
             # Helper function to calculate IoU (Intersection over Union) between two bounding boxes
             def calculate_iou(bbox1, bbox2):
                 """Calculate IoU between two bounding boxes"""
@@ -820,35 +985,35 @@ class VideoAnalyticsPipelineService:
                 y1_min = bbox1.get("y_min", 0)
                 x1_max = bbox1.get("x_max", 0)
                 y1_max = bbox1.get("y_max", 0)
-                
+
                 x2_min = bbox2.get("x_min", 0)
                 y2_min = bbox2.get("y_min", 0)
                 x2_max = bbox2.get("x_max", 0)
                 y2_max = bbox2.get("y_max", 0)
-                
+
                 # Calculate intersection
                 x_left = max(x1_min, x2_min)
                 y_top = max(y1_min, y2_min)
                 x_right = min(x1_max, x2_max)
                 y_bottom = min(y1_max, y2_max)
-                
+
                 if x_right < x_left or y_bottom < y_top:
                     return 0.0
-                
+
                 intersection = (x_right - x_left) * (y_bottom - y_top)
-                
+
                 # Calculate union
                 area1 = (x1_max - x1_min) * (y1_max - y1_min)
                 area2 = (x2_max - x2_min) * (y2_max - y2_min)
                 union = area1 + area2 - intersection
-                
+
                 if union == 0:
                     return 0.0
-                
+
                 return intersection / union
-            
+
             # Calculate statistics
-            
+
             # 1. Student count at 60s, 120s, 180s (average)
             # Assuming 15 FPS: 60s = 900 frames, 120s = 1800 frames, 180s = 2700 frames
             target_frames = [900, 1800, 2700]
@@ -865,44 +1030,44 @@ class VideoAnalyticsPipelineService:
                     count = sum(1 for obj in objects 
                               if obj.get("detection", {}).get("bounding_box", {}).get("x_max", 0) > 0)
                     person_counts.append(count)
-            
+
             # Average student count
             student_count = int(sum(person_counts) / len(person_counts)) if person_counts else 0
-            
+
             # 2. Track pose transitions with robustness
             # Minimum frames to confirm state change (at 15 FPS, 3 frames = 0.2 seconds)
             MIN_FRAMES_FOR_TRANSITION = 3
             IOU_THRESHOLD = 0.3  # IoU threshold for matching objects without ID
-            
+
             # State tracking for students with IDs
             student_states = {}  # {student_id: {"is_standing": bool, "is_raising": bool, "stand_buffer": int, "raise_buffer": int}}
             student_stand_counts = {}
             student_raise_counts = {}
-            
+
             # State tracking for objects without IDs (using ROI matching)
             unidentified_objects = []  # [{bbox, is_raising, raise_buffer, raise_count}]
             total_raise_count_no_id = 0
-            
+
             for frame_idx, frame in enumerate(frames):
                 objects = frame.get("objects", [])
-                
+
                 # Track which unidentified objects were matched this frame
                 matched_unidentified = set()
-                
+
                 for obj in objects:
                     detection = obj.get("detection", {})
                     label = detection.get("label", "")
                     student_id = obj.get("id", 0)
                     bbox = detection.get("bounding_box", {})
-                    
+
                     # Skip invalid detections (zero bounding box)
                     if bbox.get("x_max", 0) == 0:
                         continue
-                    
+
                     # Determine current pose state
                     is_standing = label in ["stand", "stand_raise_up"]
                     is_raising = label in ["sit_raise_up", "stand_raise_up"]
-                    
+
                     # Handle students with IDs
                     if student_id > 0:
                         # Initialize student state if not exists
@@ -915,9 +1080,9 @@ class VideoAnalyticsPipelineService:
                             }
                             student_stand_counts[student_id] = 0
                             student_raise_counts[student_id] = 0
-                        
+
                         state = student_states[student_id]
-                        
+
                         # Standing state transition with buffer
                         if is_standing != state["is_standing"]:
                             state["stand_buffer"] += 1
@@ -929,7 +1094,7 @@ class VideoAnalyticsPipelineService:
                                 state["stand_buffer"] = 0
                         else:
                             state["stand_buffer"] = 0
-                        
+
                         # Raising state transition with buffer
                         if is_raising != state["is_raising"]:
                             state["raise_buffer"] += 1
@@ -941,13 +1106,13 @@ class VideoAnalyticsPipelineService:
                                 state["raise_buffer"] = 0
                         else:
                             state["raise_buffer"] = 0
-                    
+
                     # Handle students without IDs (only track raising)
                     else:
                         # Try to match with existing unidentified objects using IoU
                         best_match_idx = -1
                         best_iou = 0
-                        
+
                         for idx, unid_obj in enumerate(unidentified_objects):
                             if idx in matched_unidentified:
                                 continue
@@ -955,15 +1120,15 @@ class VideoAnalyticsPipelineService:
                             if iou > best_iou and iou >= IOU_THRESHOLD:
                                 best_iou = iou
                                 best_match_idx = idx
-                        
+
                         if best_match_idx >= 0:
                             # Matched existing object
                             unid_obj = unidentified_objects[best_match_idx]
                             matched_unidentified.add(best_match_idx)
-                            
+
                             # Update bbox
                             unid_obj["bbox"] = bbox
-                            
+
                             # Raising state transition with buffer
                             if is_raising != unid_obj["is_raising"]:
                                 unid_obj["raise_buffer"] += 1
@@ -976,9 +1141,9 @@ class VideoAnalyticsPipelineService:
                                     unid_obj["raise_buffer"] = 0
                             else:
                                 unid_obj["raise_buffer"] = 0
-                            
+
                             unid_obj["last_seen_frame"] = frame_idx
-                        
+
                         else:
                             # New unidentified object
                             unidentified_objects.append({
@@ -988,34 +1153,34 @@ class VideoAnalyticsPipelineService:
                                 "raise_count": 0,
                                 "last_seen_frame": frame_idx
                             })
-                
+
                 # Remove stale unidentified objects (not seen for 30 frames = 2 seconds at 15 FPS)
                 unidentified_objects = [
                     obj for obj in unidentified_objects
                     if frame_idx - obj["last_seen_frame"] < 30
                 ]
-            
+
             # 3. Calculate total counts
             stand_count = sum(student_stand_counts.values())
             raise_up_count = sum(student_raise_counts.values()) + total_raise_count_no_id
-            
+
             # 4. Format student ID list (only students with stand transitions)
             stand_reid = [
                 {"student_id": sid, "count": count}
                 for sid, count in sorted(student_stand_counts.items())
                 if count > 0
             ]
-            
+
             stats = {
                 "student_count": student_count,
                 "stand_count": stand_count,
                 "raise_up_count": raise_up_count,
                 "stand_reid": stand_reid
             }
-            
+
             self.logger.info(f"Pose statistics: {stats}")
             return stats
-            
+
         except Exception as e:
             self.logger.error(f"Error analyzing pose statistics: {e}")
             return {
