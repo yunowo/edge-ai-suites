@@ -64,3 +64,5 @@ va_pipeline:
   mediamtx_path: components/va/bin/mediamtx
   plugin_path: components/va
   rtsp_codec: h264 # h264 or h265
+  output_rtsp_url: rtsp://127.0.0.1:8554
+  hls_base_url: http://127.0.0.1:8888

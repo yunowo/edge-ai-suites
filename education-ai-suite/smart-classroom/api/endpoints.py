@@ -237,6 +237,7 @@ def start_video_analytics_pipeline(
             service = va_services[x_session_id]
 
             # Prepare pipeline options
+            from utils.config_loader import config
             project_config = RuntimeConfig.get_section("Project")
             location = project_config.get("location", "outputs")
             name = project_config.get("name", "default")
@@ -244,7 +245,7 @@ def start_video_analytics_pipeline(
 
             options = PipelineOptions(
                 output_dir=output_dir,
-                output_rtsp="rtsp://127.0.0.1:8554",
+                output_rtsp=config.va_pipeline.output_rtsp_url,
             )
 
             # Launch pipeline
@@ -260,12 +261,11 @@ def start_video_analytics_pipeline(
                     detail=f"Failed to start pipeline '{request.pipeline_name}'",
                 )
 
-            hls_base_url = "http://127.0.0.1:8888"
             response_data = {
                 "status": "success",
                 "pipeline_name": request.pipeline_name,
                 "session_id": x_session_id,
-                "hls_stream": f"{hls_base_url}/{request.pipeline_name}_stream",
+                "hls_stream": f"{config.va_pipeline.hls_base_url}/{request.pipeline_name}_stream",
                 "overlays_embedded": True
             }
 
