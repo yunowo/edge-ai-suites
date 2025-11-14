@@ -37,6 +37,12 @@ models:
     device: NPU # NPU or GPU
     threshold: 0.5 # confidence threshold for YOLO detections
 
+mindmap:
+  system_prompt:
+    en: "Generate a Mermaid mindmap with proper syntax. Use exactly this format: Start with 'mindmap', then one root node with double parentheses, then child nodes with proper indentation (2 spaces per level). No bullet points, no multiple root nodes. There must be exactly ONE 'mindmap' declaration and ONE root node. Example: mindmap\n  root((Main Topic))\n    Child1\n      Subchild1\n      Subchild2\n    Child2\n      Subchild3"
+    zh: "生成正确语法的Mermaid思维导图。只允许一个'mindmap'根节点，并以'mindmap'开头。必须且只能有一个根节点((主题))，所有内容都应在同一个思维导图中，从该根节点展开。不要重复'mindmap'，不要使用多个根节点。不要使用Markdown格式（不要包含```mermaid或```）。示例：mindmap\n  root((课堂主题))\n    部分一\n      子节点A\n      子节点B\n    部分二\n      子节点C"
+  min_token: 20
+
 audio_preprocessing:
   chunk_duration_sec: 30
   silence_threshold: -35  # in dB
