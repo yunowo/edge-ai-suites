@@ -146,7 +146,7 @@ class VideoAnalyticsPipelineService:
             "!",
             "rtspclientsink",
             f"location={rtsp_url}/{pipeline_name}",
-            "protocols=tcp"
+            "protocols=udp"
         ]
 
     def _check_redistribute_latency(self, log_file: Path) -> bool:
