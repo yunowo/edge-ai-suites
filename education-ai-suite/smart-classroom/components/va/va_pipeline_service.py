@@ -474,8 +474,6 @@ class VideoAnalyticsPipelineService:
             f"file-path={output_dir.as_posix()}/back_resnet18.txt",
             "file-format=json-lines",
             "!",
-            "gvafpscounter",
-            "!",
             *self._get_rtsp_sink_elements(
                 options.output_rtsp, "back_stream"
             ),
